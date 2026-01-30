@@ -1,0 +1,73 @@
+name: Windows 11 on Docker
+
+on: 
+  workflow_dispatch: 
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Enable KVM Virtualization
+        run: |
+          # Ensuring the runner supports hardware acceleration
+          sudo apt-get update
+          sudo apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils
+          sudo adduser $USER libvirt
+          sudo adduser $USER kvm
+          # Check if KVM is available
+          kvm-ok || echo "KVM not supported, but continuing anyway..."
+
+      - name: Install Cloudflared
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
+
+      - name: Setup Windows Container
+        run: |
+          mkdir -p storage
+          cat > docker-compose.yml <<EOF
+          services:
+            windows:
+              image: dockurr/windows
+              container_name: windows
+              environment:
+                VERSION: "11"
+                RAM_SIZE: "5G"
+                CPU_CORES: "2"
+              devices:
+                - /dev/kvm
+              cap_add:
+                - NET_ADMIN
+              ports:
+                - "8006:8006"
+                - "3389:3389/tcp"
+              volumes:
+                - ./storage:/storage
+              restart: always
+          EOF
+          # Fixed command: 'docker compose' instead of 'docker-compose'
+          docker compose up -d
+
+      - name: Start Tunnel and Display Links
+        run: |
+          echo "Starting Cloudflare Tunnels..."
+          nohup cloudflared tunnel --url http://localhost:8006 > web.log 2>&1 &
+          nohup cloudflared tunnel --url tcp://localhost:3389 > rdp.log 2>&1 &
+          
+          echo "Waiting for links to generate (30s)..."
+          sleep 30
+          
+          echo "=============================================="
+          echo "🌍 WEB CONSOLE LINK (Browser Access):"
+          grep -o "https://[a-zA-Z0-9.-]*\.trycloudflare\.com" web.log | head -n 1
+          echo "----------------------------------------------"
+          echo "🖥️ RDP TCP LINK (For RDP Clients):"
+          grep -o "tcp://[a-zA-Z0-9.-]*\.trycloudflare\.com:[0-9]*" rdp.log | head -n 1
+          echo "=============================================="
+          
+          # This keeps the action running for 6 hours
+          sleep 21600
